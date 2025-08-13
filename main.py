@@ -38,10 +38,11 @@ def getActivities(city_name):
     TAGS = {
         "tourism": ["attraction"],  # אטרקציות
         "amenity": ["cafe", "cinema"],  # בתי קפה וקולנוע
-        "shop": ["mall"]  # קניונים
+        "shop": ["mall"],  # קניונים
+        "natural":["beach"]
     }
     gdf = ox.features_from_place(city_name, tags=TAGS)[
-        ["name", "tourism", "amenity", "shop", "geometry"]
+        ["name", "tourism", "amenity", "shop","natural"]
     ].copy()
 
     # מסנן רק מה שיש לו שם
@@ -49,7 +50,7 @@ def getActivities(city_name):
 
     # יוצרים עמודת category מאוחד
     gdf["category"] = (
-        gdf["tourism"].combine_first(gdf["amenity"]).combine_first(gdf["shop"])
+        gdf["tourism"].combine_first(gdf["amenity"]).combine_first(gdf["shop"].combine_first(gdf["natural"]))
     )
 
     # נשאיר רק name + category + geometry
@@ -90,11 +91,11 @@ def run_questionnaire():
     return city_name, weather_info, attractions_list, user_profile
 
 if __name__ == "__main__":
-    #
-    # city = "Ashdod"
-    # Activities = pd.DataFrame(getActivities(city).values).to_json
-    # print(Activities)
-    # weather = get_weather(city)
-    # print(weather)
+
+    city = "Ashdod"
+    Activities = pd.DataFrame(getActivities(city).values).to_json
+    print(Activities)
+    weather = get_weather(city)
+    print(weather)
     city_name, weather_info, attractions_list, user_profile = run_questionnaire()
     print(get_ai_response(city_name, weather_info, attractions_list, user_profile))
