@@ -80,7 +80,7 @@ def run_questionnaire():
         except ValueError:
             print("⚠ Invalid number, saved as 0.")
 
-    hobbies = input("What are your hobbies or preferred activities? ").strip()
+    hobbies = input("What are your hobbies or preferred activities ? and if there is somthing you want me to know it's the place :) ").strip()
 
     user_profile = {
         "has_children": has_children == "yes",
@@ -91,11 +91,10 @@ def run_questionnaire():
     return city_name, weather_info, attractions_list, user_profile
 
 if __name__ == "__main__":
-
-    city = "Ashdod"
-    Activities = pd.DataFrame(getActivities(city).values).to_json
-    print(Activities)
-    weather = get_weather(city)
-    print(weather)
+    # city = "tel aviv"
+    # Activities = pd.DataFrame(getActivities(city).values)
+    # print(Activities)
+    # weather = get_weather(city)
+    # print(weather)
     city_name, weather_info, attractions_list, user_profile = run_questionnaire()
     print(get_ai_response(city_name, weather_info, attractions_list, user_profile))

@@ -50,7 +50,11 @@ def get_ai_response(city_name, weather_info, attractions_list, user_profile,
                 "- Suggest the most suitable outing for the user.\n"
                 "- Take into account the current weather and the user's profile.\n"
                 "- Be clear, concise, and provide a short explanation of why you chose this recommendation.\n"
-                "- If the weather is not favorable for certain attractions, suggest suitable alternatives."
+                "- If the weather is not favorable for certain attractions, suggest suitable alternatives. \n"
+                "- try to look for some data of each recommendation that you recommend and tell it to the user inside your answer(such as opening hours for example).\n"
+                "-if you founded some data tell the user where you founded it \n"
+                "answer clearly and shortly and dont finish with a question \n "
+                "- take into account what the user tell's you about him"
             )
         },
         {
