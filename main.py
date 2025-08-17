@@ -1,11 +1,16 @@
+from __future__ import annotations
+
 import os
+from typing import Dict, List, Optional
+
 import requests
 import osmnx as ox
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+from dotenv import load_dotenv
 
-from ai import get_ai_response
+from ai import get_ai_response, get_ai_dictation
 
 
 def get_weather(city: str) -> float:
@@ -14,7 +19,7 @@ def get_weather(city: str) -> float:
     if not api_key:
         raise RuntimeError("Missing WEATHER_KEY environment variable")
 
-    params = {"q": city, "key": api_key}
+    params = {"q": get_ai_dictation(city), "key": api_key}
     headers = {"accept": "application/json"}
 
     try:
@@ -33,31 +38,90 @@ def get_weather(city: str) -> float:
 # -----------------------------------------------------
 
 
-def getActivities(city_name):
-    city_name += ", Israel"
+def getActivities(city_name: str) -> pd.DataFrame:
+    # נורמליזציה (כמו אצלך)
+    place = get_ai_dictation(city_name)
+
+    # סט תגיות ממוקד ויעיל
     TAGS = {
-        "tourism": ["attraction"],  # אטרקציות
-        "amenity": ["cafe", "cinema"],  # בתי קפה וקולנוע
-        "shop": ["mall"],  # קניונים
-        "natural":["beach"]
+        # אטרקציות ותרבות
+        "tourism": [
+            "attraction", "museum", "gallery", "zoo", "theme_park",
+            "viewpoint", "aquarium", "artwork", "information"
+        ],
+        # פנאי/טבע/פארקים
+        "leisure": [
+            "park", "garden", "playground", "nature_reserve",
+            "sports_centre", "pitch", "stadium", "swimming_pool",
+            "fitness_centre", "golf_course", "marina", "water_park"
+        ],
+        # אוכל/בילוי
+        "amenity": [
+            "cafe", "restaurant", "fast_food", "bar", "pub", "biergarten",
+            "theatre", "cinema", "arts_centre", "library", "ice_cream",
+            "marketplace", "fountain", "spa", "sauna"
+        ],
+        # קניות
+        "shop": [
+            "mall", "department_store", "supermarket", "bakery",
+            "confectionery", "deli", "outdoor"
+        ],
+        # אתרי מורשת/דת
+        "historic": [
+            "castle", "monument", "memorial", "ruins",
+            "archaeological_site", "heritage"
+        ],
+        # טבע/חוף
+        "natural": [
+            "beach", "wood", "peak"
+        ]
     }
-    gdf = ox.features_from_place(city_name, tags=TAGS)[
-        ["name", "tourism", "amenity", "shop","natural"]
-    ].copy()
 
-    # מסנן רק מה שיש לו שם
-    gdf = gdf[gdf["name"].notna()]
+    # אופציונלי: זמן המתנה גבוה יותר ל-Overpass
+    ox.settings.timeout = 180  # שניות
 
-    # יוצרים עמודת category מאוחד
-    gdf["category"] = (
-        gdf["tourism"].combine_first(gdf["amenity"]).combine_first(gdf["shop"].combine_first(gdf["natural"]))
-    )
+    frames = []
 
-    # נשאיר רק name + category + geometry
-    gdf = gdf[["name", "category"]]
+    # נבצע שאילתה נפרדת לכל מפתח כדי לצמצם עומס ולמנוע תשובה כבדה מדי
+    for key, values in TAGS.items():
+        try:
+            g = ox.features_from_place(place, tags={key: values})
+        except Exception:
+            # לא מפיל את הפונקציה אם שאילתה אחת נכשלה
+            continue
 
-    return gdf
-#--------------------------------------------
+        # מבטיחים שיש name גם אם לא קיים
+        if "name" not in g.columns:
+            g["name"] = None
+
+        # נשאיר רק name והעמודה של המפתח הנוכחי
+        keep = ["name"]
+        if key in g.columns:
+            keep.append(key)
+        g = g[keep].copy()
+
+        # סינון שמות ריקים
+        g = g[g["name"].notna() & (g["name"].astype(str).str.strip() != "")]
+
+        # אם אין את עמודת המפתח, אין לנו קטגוריה—נדלג
+        if key not in g.columns:
+            continue
+
+        # בונים קטגוריה אחידה key:value (למשל amenity:cinema)
+        g = g[g[key].notna()]
+        if g.empty:
+            continue
+        g["category"] = (key + ":" + g[key].astype(str).str.strip())
+
+        frames.append(g[["name", "category"]])
+
+    if not frames:
+        return pd.DataFrame(columns=["name", "category"])
+
+    # איחוד ודה-דופליקציה
+    df = pd.concat(frames, ignore_index=True).drop_duplicates().reset_index(drop=True)
+    return df
+
 def run_questionnaire():
     print("=== Trip Recommendation Questionnaire ===")
 
@@ -80,15 +144,19 @@ def run_questionnaire():
         except ValueError:
             print("⚠ Invalid number, saved as 0.")
 
-    hobbies = input("What are your hobbies or preferred activities ? and if there is somthing you want me to know it's the place :) ").strip()
+    hobbies = input(
+        "What are your hobbies or preferred activities ? and if there is somthing you want me to know it's the place :) ").strip()
 
     user_profile = {
-        "has_children": has_children == "yes",
+        "has_children": has_children == f"yes have {children_count} children's",
         "children_count": children_count,
         "hobbies": hobbies
     }
 
     return city_name, weather_info, attractions_list, user_profile
+
+
+
 
 if __name__ == "__main__":
     # city = "tel aviv"
@@ -96,5 +164,7 @@ if __name__ == "__main__":
     # print(Activities)
     # weather = get_weather(city)
     # print(weather)
+    # נסיון “שם עיר בלבד” (near=)
+    # דורש OPENTRIPMAP_API_KEY ב-.env (חינם)
     city_name, weather_info, attractions_list, user_profile = run_questionnaire()
     print(get_ai_response(city_name, weather_info, attractions_list, user_profile))
