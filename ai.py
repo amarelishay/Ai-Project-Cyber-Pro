@@ -1,8 +1,31 @@
+import json
 import os
+
+import numpy as np
+import pandas as pd
 from openai import OpenAI
 
 import os
 from dotenv import load_dotenv
+
+
+def _to_serializable(x):
+    if isinstance(x, set):
+        return list(x)
+    if isinstance(x, (np.generic,)):  # np.int64, np.float32 וכו'
+        return np.asarray(x).item()
+    return x
+
+
+def df_to_safe_json(df: pd.DataFrame) -> str:
+    # ממיר DF לרשימת רשומות JSON, ומסדר כל ערך בעייתי
+    records = df.to_dict(orient="records")
+    safe_records = [{k: _to_serializable(v) for k, v in row.items()} for row in records]
+    return json.dumps(safe_records, ensure_ascii=False)
+
+
+def dict_to_safe_json(d: dict) -> str:
+    return json.dumps({k: _to_serializable(v) for k, v in d.items()}, ensure_ascii=False)
 
 
 def load_env(dotenv_path: str = ".env") -> None:
@@ -19,8 +42,8 @@ def load_env(dotenv_path: str = ".env") -> None:
     else:
         print(f"⚠️ No .env file found at {dotenv_path}")
 
-def get_ai_dictation(city_name, max_tokens=800, temperature=0.4):
 
+def get_ai_dictation(city_name, max_tokens=800, temperature=0.4):
     # טעינת משתני סביבה
     load_env()
 
@@ -65,6 +88,8 @@ def get_ai_dictation(city_name, max_tokens=800, temperature=0.4):
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
         return f"[AI error: {e}]"
+
+
 def get_ai_response(city_name, weather_info, attractions_list, user_profile,
                     prompt="", context="", max_tokens=800, temperature=0.2):
     """Get AI trip recommendation from OpenAI API"""
@@ -81,35 +106,57 @@ def get_ai_response(city_name, weather_info, attractions_list, user_profile,
     client = OpenAI(api_key=api_key)
     model = os.getenv("OPENAI_MODEL")
 
+    # הפוך את האטרקציות והפרופיל למחרוזות בטוחות
+    if isinstance(attractions_list, pd.DataFrame):
+        attractions_str = df_to_safe_json(attractions_list)
+    else:
+        # אם זה כבר רשימת דיקט/דאטה—ננסה לסדר
+        attractions_str = json.dumps(attractions_list, default=_to_serializable, ensure_ascii=False)
+
+    user_profile_str = dict_to_safe_json(user_profile)
+
     messages = [
         {
             "role": "system",
             "content": (
-                "You are a trip recommendation assistant. "
+                "You are a trip recommendation assistant.\n"
                 "You will receive:\n"
-                "1. The current weather in a specific city.\n"
-                "2. A list of attractions in that city.\n"
-                "3. The name of the city.\n"
-                "4. Personal user details from a questionnaire (e.g., if they have children and how many).\n\n"
-                "Your goal:\n"
-                "- Suggest the most suitable outing for the user.\n"
-                "check what is the best recommendation for the user from the list in web \n"
-                "- Take into account the current weather and the user's profile.\n"
-                "- Be clear, concise, and provide a short explanation of why you chose this recommendation.\n"
-                "- If the weather is not favorable for certain attractions, suggest suitable alternatives. \n"
-                "- try to look for some data of each recommendation that you recommend and tell it to the user inside your answer(such as opening hours for example).\n"
-                "-if you founded some data tell the user where you founded it \n"
-                "answer clearly and shortly and  finish with enjoy  \n "
-                "- take into account what the user tell's you about him and his kids"
-            )
+                "1) City name.\n"
+                "2) Current weather in that city (numeric temperature in °C and optional conditions if available).\n"
+                "3) A list of attractions (each with name, category, latitude, longitude).\n"
+                "4) A user profile (e.g., has_children, children_count, hobbies).\n\n"
+                "Strict rules:\n"
+                "- Use ONLY the provided attractions list. Do NOT invent places or facts.\n"
+                "- Always state the current temperature in °C in the response summary and tailor advice accordingly (heat/cold/rain).\n"
+                "- Use latitude/longitude ONLY to order stops logically; NEVER display raw coordinates to the user.\n"
+                "- If details like opening hours or ticket prices are not given, write 'Unknown' and suggest verifying. Do NOT guess.\n"
+                "- Keep the response concise, practical, and globally applicable.\n"
+                "- Finish with 'Enjoy!'\n\n"
+                "Goals:\n"
+                "- Recommend ONE primary highlight (a single central attraction) that best fits the user TODAY, considering weather and profile.\n"
+                "- ALSO propose a short itinerary of 3–5 stops from the provided list.\n"
+                "- Order the itinerary logically; when lat/lon are available, use them to minimize travel distance (without showing them).\n"
+                "- If the user has children, PRIORITIZE kid-friendly attractions (zoo, aquarium, theme park, playground, park, beach, interactive museums). For toddlers, avoid long walks or strenuous venues.\n"
+                "- Align with stated hobbies when possible.\n"
+                "- If weather makes some attractions unsuitable, add 1–2 clear alternatives from the list that better fit the conditions.\n\n"
+                "Output format (exact order):\n"
+                "1) Title: <short universal title>\n"
+                "2) Summary: Write 2–3 flowing sentences in natural language that explain why this plan fits the user and the weather. "
+                "Make sure to explicitly mention the current temperature in °C in the text (e.g., 'Today it is 35°C in <City>...').\n"
+                "3) Primary highlight: <exact attraction name from input> (category if provided).\n"
+                "4) Itinerary (3–5 stops): numbered list of exact attraction names from input, each with category if provided. Order them logically; do not show coordinates.\n"
+                "5) Weather tips: 1–2 short actionable notes tailored to the temperature/conditions.\n"
+                "6) Alternatives (1–2, optional): from input only.\n"
+                "7) Try to look on web for opening hours ,if you can't find  dont say anything ).\n"
+                "8) Close: 'Enjoy!'\n")
         },
         {
             "role": "user",
             "content": (
                 f"City: {city_name}\n"
                 f"Weather: {weather_info}\n"
-                f"Attractions: {attractions_list}\n"
-                f"User profile: {user_profile}\n\n"
+                f"Attractions (JSON): {attractions_str}\n"
+                f"User profile (JSON): {user_profile_str}\n\n"
                 "Please recommend an outing for this user."
             )
         }

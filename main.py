@@ -39,86 +39,60 @@ def get_weather(city: str) -> float:
 
 
 def getActivities(city_name: str) -> pd.DataFrame:
-    # נורמליזציה (כמו אצלך)
     place = get_ai_dictation(city_name)
 
-    # סט תגיות ממוקד ויעיל
     TAGS = {
-        # אטרקציות ותרבות
-        "tourism": [
-            "attraction", "museum", "gallery", "zoo", "theme_park",
-            "viewpoint", "aquarium", "artwork", "information"
-        ],
-        # פנאי/טבע/פארקים
-        "leisure": [
-            "park", "garden", "playground", "nature_reserve",
-            "sports_centre", "pitch", "stadium", "swimming_pool",
-            "fitness_centre", "golf_course", "marina", "water_park"
-        ],
-        # אוכל/בילוי
-        "amenity": [
-            "cafe", "restaurant", "fast_food", "bar", "pub", "biergarten",
-            "theatre", "cinema", "arts_centre", "library", "ice_cream",
-            "marketplace", "fountain", "spa", "sauna"
-        ],
-        # קניות
-        "shop": [
-            "mall", "department_store", "supermarket", "bakery",
-            "confectionery", "deli", "outdoor"
-        ],
-        # אתרי מורשת/דת
-        "historic": [
-            "castle", "monument", "memorial", "ruins",
-            "archaeological_site", "heritage"
-        ],
-        # טבע/חוף
-        "natural": [
-            "beach", "wood", "peak"
-        ]
+        "tourism": ["attraction","museum","gallery","zoo","theme_park","viewpoint","aquarium","artwork","information"],
+        "leisure": ["park","garden","playground","nature_reserve","sports_centre","pitch","stadium","swimming_pool","fitness_centre","golf_course","marina","water_park"],
+        "amenity": ["cafe","restaurant","fast_food","bar","pub","biergarten","theatre","cinema","arts_centre","library","ice_cream","marketplace","fountain","spa","sauna"],
+        "shop": ["mall","department_store","supermarket","bakery","confectionery","deli","outdoor"],
+        "historic": ["castle","monument","memorial","ruins","archaeological_site","heritage"],
+        "natural": ["beach","wood","peak"]
     }
 
-    # אופציונלי: זמן המתנה גבוה יותר ל-Overpass
-    ox.settings.timeout = 180  # שניות
-
+    ox.settings.timeout = 180
     frames = []
 
-    # נבצע שאילתה נפרדת לכל מפתח כדי לצמצם עומס ולמנוע תשובה כבדה מדי
     for key, values in TAGS.items():
         try:
             g = ox.features_from_place(place, tags={key: values})
         except Exception:
-            # לא מפיל את הפונקציה אם שאילתה אחת נכשלה
             continue
 
-        # מבטיחים שיש name גם אם לא קיים
+        # דאגה לשדות בסיס
         if "name" not in g.columns:
             g["name"] = None
-
-        # נשאיר רק name והעמודה של המפתח הנוכחי
-        keep = ["name"]
+        keep = ["name", "geometry"]
         if key in g.columns:
             keep.append(key)
         g = g[keep].copy()
 
-        # סינון שמות ריקים
+        # ניקוי
         g = g[g["name"].notna() & (g["name"].astype(str).str.strip() != "")]
-
-        # אם אין את עמודת המפתח, אין לנו קטגוריה—נדלג
         if key not in g.columns:
             continue
-
-        # בונים קטגוריה אחידה key:value (למשל amenity:cinema)
         g = g[g[key].notna()]
         if g.empty:
             continue
-        g["category"] = (key + ":" + g[key].astype(str).str.strip())
 
-        frames.append(g[["name", "category"]])
+        # ודא שה־CRS מוגדר כ-WGS84 אם חסר
+        if g.crs is None:
+            g = g.set_crs(epsg=4326)
+
+        # חישוב centroid במטרי (3857) ואז המרה חזרה ל-4326
+        g_proj = g.to_crs(epsg=3857)
+        centroids_proj = gpd.GeoSeries(g_proj.geometry.centroid, crs=g_proj.crs)
+        centroids_wgs84 = centroids_proj.to_crs(epsg=4326)
+
+        g["lat"] = centroids_wgs84.y.values
+        g["lon"] = centroids_wgs84.x.values
+
+        g["category"] = key + ":" + g[key].astype(str).str.strip()
+        frames.append(g[["name", "category", "lat", "lon"]])
 
     if not frames:
-        return pd.DataFrame(columns=["name", "category"])
+        return pd.DataFrame(columns=["name", "category", "lat", "lon"])
 
-    # איחוד ודה-דופליקציה
     df = pd.concat(frames, ignore_index=True).drop_duplicates().reset_index(drop=True)
     return df
 
@@ -147,12 +121,12 @@ def run_questionnaire():
     hobbies = input(
         "What are your hobbies or preferred activities ? and if there is somthing you want me to know it's the place :) ").strip()
 
+    has_children_flag = (has_children == "y")
     user_profile = {
-        "has_children": has_children == f"yes have {children_count} children's",
+        "has_children": has_children_flag,
         "children_count": children_count,
-        "hobbies": hobbies
+        "hobbies": hobbies,
     }
-
     return city_name, weather_info, attractions_list, user_profile
 
 
