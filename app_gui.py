@@ -19,7 +19,7 @@ class App(tk.Tk):
         self.title("AI Attractions – GUI")
         self.geometry("1100x720")
 
-        # נשמור מצב אחרון לפתיחת מפה בדפדפן
+        # מצב לפתיחת מפה בדפדפן
         self._last_selected_df = pd.DataFrame()
         self._last_center = (32.08, 34.78)
         self._current_map_html = None  # נתיב HTML של המפה
@@ -48,8 +48,11 @@ class App(tk.Tk):
         actions.pack(fill="x")
         self.search_btn = ttk.Button(actions, text="חפש המלצות", command=self.on_search)
         self.search_btn.pack(side="left")
-        self.progress = ttk.Progressbar(actions, mode="indeterminate", length=180)
+
+        # determinate progress (0..100)
+        self.progress = ttk.Progressbar(actions, mode="determinate", length=180, maximum=100, value=0)
         self.progress.pack(side="left", padx=12)
+
         self.status_var = tk.StringVar(value="מוכן")
         ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=12)
 
@@ -74,7 +77,7 @@ class App(tk.Tk):
             self.tree.column(c, width=180 if c == "name" else 120, anchor="center")
         self.tree.pack(fill="both", expand=True)
 
-        # Right: רק כפתור לפתיחת המפה בדפדפן
+        # Right: כפתור לפתיחת המפה בדפדפן
         right = ttk.LabelFrame(split, text="מפה (תיפתח בדפדפן)", padding=8)
         split.add(right, weight=1)
 
@@ -85,18 +88,26 @@ class App(tk.Tk):
         # ENTER מפעיל חיפוש
         self.bind("<Return>", lambda e: self.on_search())
 
+    # ---------- Progress helpers ----------
+    def set_progress(self, pct: int, msg: str = ""):
+        """עדכון אחוז + טקסט סטטוס בצורה בטוחה ל־GUI (גם מתוך thread)."""
+        def _apply():
+            self.progress.configure(value=max(0, min(100, int(pct))))
+            if msg:
+                self.status_var.set(msg)
+        self.after(0, _apply)
+
     # ---------- UI helpers ----------
     def set_busy(self, busy: bool, msg: str = ""):
         if busy:
             self.search_btn.configure(state="disabled")
             self.open_ext_btn.configure(state="disabled")
-            self.status_var.set(msg or "מביא נתונים...")
-            self.progress.start(12)
+            self.status_var.set(msg or "מתחיל...")
+            self.progress.configure(value=0)
         else:
             self.search_btn.configure(state="normal")
             # כפתור המפה יופעל רק אם יש קובץ HTML תקין (_update_ui דואג לזה)
             self.status_var.set(msg or "מוכן")
-            self.progress.stop()
 
     def clear_results(self):
         for i in self.tree.get_children():
@@ -104,6 +115,7 @@ class App(tk.Tk):
         self.ai_text.delete("1.0", "end")
         self._current_map_html = None
         self.open_ext_btn.configure(state="disabled")
+        self.progress.configure(value=0)
 
     # ---------- Button action ----------
     def on_search(self):
@@ -130,13 +142,17 @@ class App(tk.Tk):
     # ---------- Work function (background) ----------
     def _do_search(self, city, hobbies, has_children, children_count):
         try:
-            # 1) Weather
+            self.set_progress(5, "מאתר מזג אוויר…")
             weather_info = get_weather(city)
 
-            # 2) ALL API attractions (for table)
-            df_attr = getActivities(city)   # name, category, lat, lon
+            self.set_progress(15, "טוען אטרקציות מה־OSM…")
+            df_attr = getActivities(
+                city,
+                limit=300,
+                progress_callback=lambda p, m: self.set_progress(p, m)
+            )   # name, category, lat, lon
 
-            # 3) AI
+            self.set_progress(60, "חושב המלצה חכמה…")
             user_profile = {
                 "has_children": bool(has_children),
                 "children_count": int(children_count),
@@ -144,20 +160,22 @@ class App(tk.Tk):
             }
             ai_msg = get_ai_response(city, weather_info, df_attr, user_profile)
 
-            # 4) רק בחירות המודל → מפה
+            self.set_progress(75, "מחשב מרכז עיר…")
             place = get_ai_dictation(city)
             center = geocode_city_center(place)
             self._last_center = center
 
+            self.set_progress(82, "מתאים שמות מהתשובה…")
             selected_df = select_places_from_answer(df_attr, ai_msg)
             self._last_selected_df = selected_df.copy()
 
+            self.set_progress(88, "מסדר מסלול קצר…")
             itin_df = nearest_neighbor_itinerary(
                 selected_df, center[0], center[1],
                 stops=min(5, len(selected_df))
             ) if not selected_df.empty else selected_df
 
-            # צור HTML אינטראקטיבי (Folium) – מהבחירות בלבד
+            self.set_progress(94, "בונה מפה אינטראקטיבית…")
             html_path = create_map(
                 center,
                 itin_df if not itin_df.empty else selected_df,
@@ -165,7 +183,7 @@ class App(tk.Tk):
             )
             self._current_map_html = os.path.abspath(html_path)
 
-            # חזרה ל-UI
+            self.set_progress(100, "מסיים…")
             self.after(0, lambda: self._update_ui(ai_msg, df_attr))
         except Exception as e:
             self.after(0, lambda: self._handle_error(e))

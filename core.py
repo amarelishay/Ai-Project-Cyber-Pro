@@ -1,19 +1,7 @@
 # core.py
-# ------------------------------
-# לוגיקה מרכזית לפרויקט:
-# - מזג אוויר (חינמי, ללא מפתח: Open-Meteo; ואם יש WEATHER_KEY – WeatherAPI)
-# - שליפה חכמה מ-OSM עם הגבלה ≤300 ישירות בשרת (Overpass QL) + Fallback ל-OSMnx
-# - בניית מסלול קצר (Nearest Neighbor)
-# - יצירת מפה (Folium) כ-HTML להטמעה ב-GUI
-# - חילוץ שמות אטרקציות מטקסט תשובת ה-AI והתאמתם ל-DF המקורי
-# ------------------------------
-
 from __future__ import annotations
 import os
 import re
-from staticmap import StaticMap, CircleMarker, Line
-from PIL import Image
-
 from typing import Optional, Tuple, List, Dict
 
 import requests
@@ -22,13 +10,11 @@ import geopandas as gpd
 import osmnx as ox
 from difflib import get_close_matches
 import folium
-from shapely.geometry import Point
 
 # נרמול שם מקום (עיר) – מגיע מ-ai.py אצלך
 try:
     from ai import get_ai_dictation
 except Exception:
-    # גיבוי: החזר את הטקסט כמו שהוא אם אין פונקציה
     def get_ai_dictation(city: str) -> str:
         return str(city).strip()
 
@@ -37,22 +23,14 @@ except Exception:
 # ------------------------------
 
 def _geocode_for_weather(city: str) -> Optional[Tuple[float, float]]:
-    """
-    גיאוקוד קליל עבור מזג אוויר (אם אין WeatherAPI): משתמש ב-Nominatim (OSM).
-    """
     try:
         q = get_ai_dictation(city)
-        loc = ox.geocode(q)  # (lat, lon)
-        return float(loc[0]), float(loc[1])
+        lat, lon = ox.geocode(q)  # (lat, lon)
+        return float(lat), float(lon)
     except Exception:
         return None
 
-
 def _weather_open_meteo(city: str) -> Optional[str]:
-    """
-    פנייה חינמית ל-Open-Meteo (ללא מפתח).
-    מחזיר מחרוזת בפורמט: '<temp>°C, <conditions>' או None.
-    """
     coords = _geocode_for_weather(city)
     if not coords:
         return None
@@ -62,29 +40,21 @@ def _weather_open_meteo(city: str) -> Optional[str]:
     try:
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
-        data = r.json()
-        cur = data.get("current_weather") or {}
-        temp = cur.get("temperature")  # Celsius
-        # מצב כללי – אין מלל קבוע, נשאיר רק טמפ'
+        cur = (r.json() or {}).get("current_weather") or {}
+        temp = cur.get("temperature")
         if temp is None:
             return None
         return f"{temp}°C"
     except Exception:
         return None
 
-
 def _weather_weatherapi(city: str, api_key: str) -> Optional[str]:
-    """
-    אם יש WEATHER_KEY – נשתמש ב-WeatherAPI (כבר עבד אצלך).
-    פורמט החזרה: '<temp>°C, <condition-text>'
-    """
     url = "http://api.weatherapi.com/v1/current.json"
     params = {"key": api_key, "q": get_ai_dictation(city), "aqi": "no", "lang": "en"}
     try:
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
-        data = r.json()
-        cur = data.get("current", {})
+        cur = (r.json() or {}).get("current", {}) or {}
         t = cur.get("temp_c")
         cond = ((cur.get("condition") or {}).get("text") or "").strip()
         if t is None:
@@ -93,42 +63,30 @@ def _weather_weatherapi(city: str, api_key: str) -> Optional[str]:
     except Exception:
         return None
 
-
 def get_weather(city: str) -> str:
-    """
-    מחזיר מחרוזת מזג אוויר לתזמון מול ה-LLM:
-    תמיד יכיל טמפרטורה ב-°C (ואם יש – גם מלל מצב).
-    """
     key = os.getenv("WEATHER_KEY") or os.getenv("WEATHERAPI_KEY")
     if key:
         s = _weather_weatherapi(city, key)
         if s:
             return s
     s = _weather_open_meteo(city)
-    if s:
-        return s
-    # גיבוי: לפחות נחזיר Unknown כדי שהמודל יתייחס בהתאם
-    return "Unknown"
-
+    return s or "Unknown"
 
 # ------------------------------
 #        OSM Attractions
 # ------------------------------
 
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-
-# קבוצות תגים – כמו אצלך
 OSM_TAGS: Dict[str, List[str]] = {
-    "tourism": ["attraction", "museum", "gallery", "zoo", "theme_park", "viewpoint", "aquarium", "artwork", "information"],
-    "leisure": ["park", "garden", "playground", "nature_reserve", "sports_centre", "pitch", "stadium", "swimming_pool", "fitness_centre", "golf_course", "marina", "water_park"],
-    "amenity": ["cafe", "restaurant", "fast_food", "bar", "pub", "biergarten", "theatre", "cinema", "arts_centre", "library", "ice_cream", "marketplace", "fountain", "spa", "sauna"],
-    "shop": ["mall", "department_store", "supermarket", "bakery", "confectionery", "deli", "outdoor"],
-    "historic": ["castle", "monument", "memorial", "ruins", "archaeological_site", "heritage"],
-    "natural": ["beach", "wood", "peak"]
+    "tourism": ["attraction","museum","gallery","zoo","theme_park","viewpoint","aquarium","artwork","information"],
+    "leisure": ["park","garden","playground","nature_reserve","sports_centre","pitch","stadium","swimming_pool","fitness_centre","golf_course","marina","water_park"],
+    "amenity": ["cafe","restaurant","fast_food","bar","pub","biergarten","theatre","cinema","arts_centre","library","ice_cream","marketplace","fountain","spa","sauna"],
+    "shop": ["mall","department_store","supermarket","bakery","confectionery","deli","outdoor"],
+    "historic": ["castle","monument","memorial","ruins","archaeological_site","heritage"],
+    "natural": ["beach","wood","peak"]
 }
 
 def _bbox_for_place(place: str) -> Optional[Tuple[float, float, float, float]]:
-    """החזרת Bounding Box של המקום (west, south, east, north)."""
     try:
         gdf = ox.geocode_to_gdf(place)
         minx, miny, maxx, maxy = gdf.unary_union.bounds
@@ -136,44 +94,52 @@ def _bbox_for_place(place: str) -> Optional[Tuple[float, float, float, float]]:
     except Exception:
         return None
 
-
 def _overpass_query_bounded(tags: Dict[str, List[str]], bbox: Tuple[float,float,float,float], limit: int) -> str:
-    """בונה שאילתת Overpass QL עם הגבלה כוללת (out center <limit>)."""
     west, south, east, north = bbox
     parts = []
     for k, vals in tags.items():
         pat = "(" + "|".join(vals) + ")"
         parts.append(f'nwr["{k}"~"{pat}"]({south},{west},{north},{east});')
     union = "\n  ".join(parts)
-    ql = f"""
+    return f"""
     [out:json][timeout:180];
     (
       {union}
     );
     out center {int(limit)};
     """
-    return ql
-
 
 def _fetch_overpass(ql: str) -> List[dict]:
-    r = requests.post(OVERPASS_URL, data={"data": ql}, timeout=180)
+    r = requests.post(
+        OVERPASS_URL,
+        data={"data": ql},
+        timeout=180,
+        headers={"User-Agent": "AIProject/1.0 (+overpass)"}
+    )
     r.raise_for_status()
     return (r.json() or {}).get("elements", [])
 
+def getActivities(city_name: str, limit: int = 300, progress_callback=None) -> pd.DataFrame:
+    """שליפה מ-OSM עם הגבלה ≤limit מהשרת; Fallback ל-OSMnx. מחזיר name,category,lat,lon."""
+    def ping(p, m=""):
+        if callable(progress_callback):
+            try:
+                progress_callback(int(p), m)
+            except Exception:
+                pass
 
-def getActivities(city_name: str, limit: int = 300) -> pd.DataFrame:
-    """
-    שליפה מ-OSM עם הגבלה לכל היותר 'limit' רשומות כבר מהשרת.
-    פורמט החזרה: name, category, lat, lon (ללא קואורדינטות בדפוס גיאומטרי).
-    """
     place = get_ai_dictation(city_name)
+    ping(18, "מחשב גבולות עיר…")
     bbox = _bbox_for_place(place)
 
-    # נסה קודם Overpass עם limit
+    # נסיון 1: Overpass
     if bbox:
         try:
+            ping(22, "שולח שאילתת Overpass…")
             ql = _overpass_query_bounded(OSM_TAGS, bbox, limit)
             elements = _fetch_overpass(ql)
+
+            ping(40, "ממיר תוצאות ל-DataFrame…")
             rows = []
             for el in elements:
                 tags = el.get("tags", {}) or {}
@@ -181,7 +147,6 @@ def getActivities(city_name: str, limit: int = 300) -> pd.DataFrame:
                 if not name or not str(name).strip():
                     continue
 
-                # קואורדינטות: ל-nodes יש lat/lon; ל-ways/relations יש center
                 if "lat" in el and "lon" in el:
                     lat, lon = el["lat"], el["lon"]
                 else:
@@ -190,7 +155,6 @@ def getActivities(city_name: str, limit: int = 300) -> pd.DataFrame:
                 if lat is None or lon is None:
                     continue
 
-                # קטגוריה – key:value הראשון שקיים מתוך הסט
                 cat = ""
                 for k in OSM_TAGS.keys():
                     v = tags.get(k)
@@ -207,18 +171,22 @@ def getActivities(city_name: str, limit: int = 300) -> pd.DataFrame:
 
             df = pd.DataFrame(rows)
             if not df.empty:
-                df = df.drop_duplicates(subset=["name", "lat", "lon"]).reset_index(drop=True)
+                ping(52, "מנקה כפילויות…")
+                df = df.drop_duplicates(subset=["name","lat","lon"]).reset_index(drop=True)
                 if len(df) > limit:
                     df = df.head(limit).reset_index(drop=True)
+                ping(55, "סיים Overpass.")
                 return df
         except Exception:
-            pass  # ניפול ל-Fallback
+            ping(30, "Overpass נכשל, עובר ל-OSMnx…")
 
-    # Fallback – OSMnx features_from_place, עם עצירה מוקדמת + תיקון CRS לחישוב centroids
+    # נסיון 2: OSMnx (fallback)
+    ping(35, "OSMnx: טוען שכבות לפי תגיות…")
     ox.settings.timeout = 180
     frames: List[pd.DataFrame] = []
+    total_keys = len(OSM_TAGS)
 
-    for key, values in OSM_TAGS.items():
+    for i, (key, values) in enumerate(OSM_TAGS.items(), start=1):
         try:
             g = ox.features_from_place(place, tags={key: values})
         except Exception:
@@ -237,48 +205,46 @@ def getActivities(city_name: str, limit: int = 300) -> pd.DataFrame:
         if g.empty:
             continue
 
-        # ודא CRS
         if g.crs is None:
             g = g.set_crs(epsg=4326)
 
-        # חישוב centroid "נכון": הקרנה למטרי ואז חזרה ל-WGS84
         g_proj = g.to_crs(epsg=3857)
-        centroids_proj = gpd.GeoSeries(g_proj.geometry.centroid, crs=g_proj.crs)
-        centroids_wgs84 = centroids_proj.to_crs(epsg=4326)
+        centroids_proj = g_proj.geometry.centroid
+        centroids_wgs84 = gpd.GeoSeries(centroids_proj, crs=g_proj.crs).to_crs(epsg=4326)
 
         g["lat"] = centroids_wgs84.y.values
         g["lon"] = centroids_wgs84.x.values
-
         g["category"] = key + ":" + g[key].astype(str).str.strip()
+
         frames.append(g[["name", "category", "lat", "lon"]])
 
-        # עצירה מוקדמת – אם כבר עברנו limit נחלקל מיד
+        # עדכון התקדמות יחסי
+        ping(35 + int(50 * (i / max(1, total_keys))), f"OSMnx: מעבד {key} ({i}/{total_keys})…")
+
+        # עצירה מוקדמת
         if sum(len(f) for f in frames) >= limit:
             break
 
     if not frames:
+        ping(96, "לא נמצאו תוצאות.")
         return pd.DataFrame(columns=["name", "category", "lat", "lon"])
 
+    ping(92, "מאחד תוצאות…")
     df = pd.concat(frames, ignore_index=True).drop_duplicates().reset_index(drop=True)
     if len(df) > limit:
         df = df.head(limit).reset_index(drop=True)
+    ping(96, "סיים OSMnx.")
     return df
-
 
 # ------------------------------
 #  Route building (Nearest Neighbor)
 # ------------------------------
 
 def geocode_city_center(place: str) -> Tuple[float, float]:
-    """מחזיר (lat, lon) למרכז העיר בעזרת OSMnx."""
     lat, lon = ox.geocode(place)  # (lat, lon)
     return float(lat), float(lon)
 
-
 def nearest_neighbor_itinerary(df: pd.DataFrame, start_lat: float, start_lon: float, stops: int = 4) -> pd.DataFrame:
-    """
-    בונה מסלול קצר לפי קרבה (approx). אם df קטן – יחזיר את הקיים.
-    """
     if df.empty:
         return df.copy()
     work = df.dropna(subset=["lat", "lon"]).copy()
@@ -292,7 +258,6 @@ def nearest_neighbor_itinerary(df: pd.DataFrame, start_lat: float, start_lon: fl
         work = work.drop(index=idx)
     return pd.DataFrame(route).reset_index(drop=True)
 
-
 # ------------------------------
 #   Parse AI answer → selected places
 # ------------------------------
@@ -305,28 +270,15 @@ def _normalize_name(s: str) -> str:
     s_spaced = re.sub(r"\s+", " ", s_no_punct)
     return s_spaced.lower().strip()
 
-
 def _extract_candidate_lines(answer_text: str) -> List[str]:
-    """
-    שולף שמות מהרשובה:
-    - Primary highlight: <name>
-    - Itinerary: שורות ממוספרות '1. <name> – ...'
-    - Alternatives: שורות שמתחילות ב'- <name>'
-    """
     names = []
-
-    # Primary highlight
     m = re.search(r"(?im)^Primary highlight:\s*(.+)$", answer_text)
     if m:
         names.append(m.group(1).strip())
-
-    # Itinerary numbered lines
     for line in answer_text.splitlines():
         m = re.match(r"^\s*\d+\.\s*(.+)$", line.strip())
         if m:
             names.append(m.group(1).strip())
-
-    # Alternatives bullet lines
     parsing_alts = False
     for line in answer_text.splitlines():
         if re.match(r"(?i)^\s*Alternatives?:", line.strip()):
@@ -336,44 +288,32 @@ def _extract_candidate_lines(answer_text: str) -> List[str]:
             m = re.match(r"^\s*-\s*(.+)$", line.strip())
             if m:
                 names.append(m.group(1).strip())
-            # עצור אם הגענו לחלק הבא
             if re.match(r"^\s*(Weather tips|Notes|Close|Enjoy!)", line.strip(), re.I):
                 break
-
-    # חתוך תיאורים אחרי מפרידי טקסט נפוצים (en dash / em dash וכו')
     cleaned = []
     for n in names:
         n = re.split(r"\s+[–—-]\s+", n, maxsplit=1)[0].strip()
         cleaned.append(n)
     return cleaned
 
-
 def _variants(name: str) -> List[str]:
-    """וריאנטים מועילים: מלא, בלי סוגריים, והתוכן שבסוגריים (תרגום/כינוי)."""
     base = name.strip()
     no_paren = re.sub(r"\s*\([^)]*\)\s*", " ", base).strip()
-    in_paren = re.findall(r"\(([^)]{2,})\)", base)
+    in_paren = re.findall(r"\(([^)]]{2,})\)", base)
     vars_ = [base, no_paren] + in_paren
-    seen: set[str] = set(); out: List[str] = []
+    out, seen = [], set()
     for v in vars_:
         if v and v not in seen:
             seen.add(v); out.append(v)
     return out
 
-
 def select_places_from_answer(df: pd.DataFrame, answer_text: str) -> pd.DataFrame:
-    """
-    מקבל DF מלא של אטרקציות + טקסט תשובת המודל,
-    ומחזיר DF עם המקומות שהוזכרו (Primary/Itinerary/Alternatives) באותו פורמט: name, category, lat, lon.
-    """
     if df.empty:
         return df.copy()
-
     for c in ["name", "category", "lat", "lon"]:
         if c not in df.columns:
             raise ValueError(f"Missing required column '{c}' in attractions DataFrame")
 
-    # אינדקס שמות מנורמלים -> אינדקסים מקוריים
     name_index: Dict[str, List[int]] = {}
     for idx, row in df.iterrows():
         norm = _normalize_name(str(row["name"]))
@@ -386,7 +326,6 @@ def select_places_from_answer(df: pd.DataFrame, answer_text: str) -> pd.DataFram
 
     for raw in raw_candidates:
         matched = False
-        # נסה וריאנטים: מלא / בלי סוגריים / התוכן שבסוגריים
         for v in _variants(raw):
             norm = _normalize_name(v)
             if norm in name_index:
@@ -397,8 +336,6 @@ def select_places_from_answer(df: pd.DataFrame, answer_text: str) -> pd.DataFram
                 break
         if matched:
             continue
-
-        # פאזי-מאץ' עדין אם אין התאמה ישירה
         norm_full = _normalize_name(raw)
         close = get_close_matches(norm_full, all_norm_names, n=1, cutoff=0.85)
         if close:
@@ -408,61 +345,65 @@ def select_places_from_answer(df: pd.DataFrame, answer_text: str) -> pd.DataFram
 
     return df.loc[picked_indices, ["name", "category", "lat", "lon"]].reset_index(drop=True)
 
-
 # ------------------------------
 #            Map (Folium)
 # ------------------------------
 
 def create_map(city_center: Tuple[float, float], points_df: pd.DataFrame, out_path: str = "itinerary_map.html") -> str:
     """
-    יוצר קובץ HTML עם מפה, סימונים ומסלול מחובר. לא פותח דפדפן.
-    החזרה: נתיב לקובץ HTML (עבור GUI להטענה פנימית).
+    יוצר HTML אינטראקטיבי עם:
+    - סיכות ממוספרות לפי סדר המסלול
+    - עיגולי צבע מתחת לכל סיכה (קלירות)
+    - קו PolyLine בין התחנות
+    - fit_bounds אוטומטי לכל הנקודות
     """
     m = folium.Map(location=city_center, zoom_start=13)
+
     coords = []
-    for i, row in points_df.iterrows():
-        if pd.isna(row.get("lat")) or pd.isna(row.get("lon")):
-            continue
-        title = f"{i+1}. {row.get('name','')}"
-        cat = row.get("category", "")
-        folium.Marker(
-            location=[float(row["lat"]), float(row["lon"])],
-            popup=folium.Popup(f"<b>{title}</b><br/>{cat}", max_width=260),
-            tooltip=title
+    clean = points_df.dropna(subset=["lat", "lon"]).copy()
+    for i, row in clean.reset_index(drop=True).iterrows():
+        lat = float(row["lat"]); lon = float(row["lon"])
+        name = str(row.get("name", ""))
+        cat  = str(row.get("category", ""))
+
+        # עיגול צבעוני – שיהיה קל לראות גם בלי האייקון
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=7 if i == 0 else 6,
+            weight=2,
+            fill=True,
+            fill_opacity=0.9
         ).add_to(m)
-        coords.append((float(row["lat"]), float(row["lon"])))
+
+        # סיכה ממוספרת (DivIcon)
+        folium.Marker(
+            location=[lat, lon],
+            tooltip=f"{i+1}. {name}",
+            popup=folium.Popup(f"<b>{i+1}. {name}</b><br/>{cat}", max_width=260),
+            icon=folium.DivIcon(
+                html=f"""
+                <div style="
+                    background:#2c7be5;
+                    color:#fff;
+                    border-radius:14px;
+                    width:28px;height:28px;
+                    line-height:28px;
+                    text-align:center;
+                    font-weight:700;
+                    font-size:12px;
+                    box-shadow:0 0 0 2px #fff;
+                ">{i+1}</div>"""
+            )
+        ).add_to(m)
+
+        coords.append([lat, lon])
+
+    # קו המסלול + התאמת תיחום
     if len(coords) >= 2:
-        folium.PolyLine(coords).add_to(m)
+        folium.PolyLine(coords, weight=3).add_to(m)
+        m.fit_bounds(coords)
+    elif len(coords) == 1:
+        m.location = coords[0]; m.zoom_start = 15
+
     m.save(out_path)
     return out_path
-
-def create_static_map_image(city_center: tuple[float, float], points_df: pd.DataFrame,
-                            out_path: str = "itinerary_map.png") -> str:
-    """
-    PNG סטטי של המפה: מסלול + סמנים.
-    - אם יש >=2 נקודות: מתאים פריימינג אוטומטי לכל הנקודות (fit to bounds).
-    - אם יש 1 נקודה: מתמקד עליה בזום נוח.
-    - אם אין נקודות: מתמקד במרכז העיר בזום כללי.
-    """
-    m = StaticMap(900, 640, url_template="https://a.tile.openstreetmap.org/{z}/{x}/{y}.png")
-
-    coords = []
-    for i, row in points_df.iterrows():
-        if pd.isna(row.get("lat")) or pd.isna(row.get("lon")):
-            continue
-        lat = float(row["lat"]); lon = float(row["lon"])
-        m.add_marker(CircleMarker((lon, lat), '#2c7be5', 10 if i == 0 else 8))
-        coords.append((lon, lat))
-
-    if len(coords) >= 2:
-        m.add_line(Line(coords, '#2c7be5', 3))
-        # ⚡ בלי center/zoom — StaticMap יבצע fit-to-bounds אוטומטי לכל הסמנים/הקו
-        image = m.render()
-    elif len(coords) == 1:
-        # נקודה אחת — התקרבות נעימה
-        (lon, lat) = coords[0]
-        image = m.render(zoom=15, center=(lon, lat))
-    else:
-        # אין נקודות — מרכז עיר
-        clat, clon = float(city_center[0]), float(city_center[1])
-        image = m.render(zoom=13, center=(clon, clat))
